@@ -11,8 +11,4 @@ Just a simple WhatsApp web scraping to collect conversation data.
 ## Know troubles:
  It may happen that the WhatsApp changes the name of the CSS classes it uses, if it occurs, the program won't be able to get the contact list, scroll the side-pane, or get the messages. To solve this, you must search for the current CSS class name and change it in the code. To help with this, below are some print screens indicating the CSS classes used
 
-<kbd><img src="readme/image_1.png" /></kbd>
-<kbd><img src="readme/image_2.png" /></kbd>
-<kbd><img src="readme/image_3.png" /></kbd>
-<kbd><img src="readme/image_4.png" /></kbd>
-# wa-wscrap-bot
+# wa-wscrap-bot by allanvvz
