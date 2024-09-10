@@ -22,6 +22,9 @@ class WhatsAppBot:
         input('Pressione Enter após escanear o QR Code ou após a página carregar completamente\n')
         self.conversa_bot = conversa_bot
 
+        # Define o status do bot
+        self.bot_ativo = True
+
     def buscar_contato(self, nome_contato):
         try:
             # Busca o campo de pesquisa e insere o nome do contato
@@ -37,46 +40,59 @@ class WhatsAppBot:
         except Exception as e:
             print(f"Erro ao buscar contato: {e}")
 
-    def buscar_novas_mensagens(self):
+    def buscar_novas_mensagens(self, nomes_conversas):
+        """
+        Busca e clica em conversas com nomes específicos e verifica se há mensagens não lidas.
+        :param nomes_conversas: Lista de nomes das conversas que deseja selecionar
+        """
         self.conversa_bot.n_messages = 0
-        for i in range(1, 10):  # Ajuste o range de acordo com o número máximo de mensagens que você deseja buscar
+
+        for nome in nomes_conversas:
             try:
-                # Tenta encontrar o elemento com "i mensagem(s) não lida(s)"
-                self.icone = self.driver.find_element(By.CSS_SELECTOR,
-                                                      f'span[aria-label="1 mensagem não lida"], span[aria-label="{i} mensagens não lidas"]')
-                print(f"Elemento encontrado com {i} mensagem(s) não lida(s)")
-                self.conversa_bot.n_messages = i
-                break  # Se o elemento for encontrado, interrompe o loop
+                # Localiza o elemento de uma conversa com o nome desejado
+                contato_seletor = f"span[title='{nome}']"
+                self.icone = self.driver.find_element(By.CSS_SELECTOR, contato_seletor)
+                print(f"Conversa encontrada com o nome: {nome}")
+
+                # Verifica se há mensagens não lidas para essa conversa
+                for i in range(1,
+                               10):  # Ajuste o range de acordo com o número máximo de mensagens que deseja buscar
+                    try:
+                        # Tenta encontrar o elemento que indica "i mensagem(s) não lida(s)"
+                        self.icone = self.driver.find_element(By.CSS_SELECTOR,
+                                                              f'span[aria-label="1 mensagem não lida"], span[aria-label="{i} mensagens não lidas"]')
+                        print(f"Elemento encontrado com {i} mensagem(s) não lida(s)")
+                        self.conversa_bot.n_messages = i
+                        break  # Se o elemento for encontrado, interrompe o loop
+                    except NoSuchElementException:
+                        # Se não encontrar o elemento, continua o loop para o próximo valor de i
+                        continue
+                else:
+                    print("Nenhuma mensagem não lida encontrada.")
+
+                # Clica na conversa
+                self.icone.click()
+                return  # Sai do método após encontrar e clicar na conversa
+
             except NoSuchElementException:
-                # Se não encontrar o elemento, continua o loop para o próximo valor de i
+                # Se o nome da conversa não for encontrado, continua para o próximo nome
+                print(f"Conversa com o nome {nome} não encontrada.")
                 continue
-        else:
-            print("Nenhuma mensagem não lida encontrada.")
-        self.icone.click()
-        return
 
-    # def last_message(self):
-    #     # Procura o elemento que contém a última mensagem
-    #     #elemento_ultima_mensagem = self.driver.find_element(By.CSS_SELECTOR, 'span[dir="ltr"]')
-    #     elemento_ultima_mensagem = self.driver.find_element(By.CSS_SELECTOR, 'span[dir="ltr"][class="_ao3e selectable-text copyable-text"]')
-    #     # Lê o texto da última mensagem e atribui à variável 'self.ultima_mensagem'
-    #     self.ultima_mensagem = elemento_ultima_mensagem.text
-    #     return self.ultima_mensagem
-
-    def last_two_messages(self):
+    def last_n_messages(self):
         try:
             # Encontra todos os elementos que representam mensagens, ordenando pelas mais recentes
             elementos_mensagens = self.driver.find_elements(By.CSS_SELECTOR, 'div.copyable-text[data-pre-plain-text]')
 
-            # Verifica se há pelo menos 2 mensagens
-            if len(elementos_mensagens) >= 2:
-                # Extrai as duas últimas mensagens
-                ultimas_mensagens = elementos_mensagens[-2:]  # Pega as duas últimas mensagens
+            # Verifica se há pelo menos n_messages mensagens
+            if len(elementos_mensagens) >= self.conversa_bot.n_messages:
+                # Extrai as últimas n_messages mensagens
+                ultimas_mensagens = elementos_mensagens[-self.conversa_bot.n_messages:]  # Pega as últimas n mensagens
 
                 # Lista para armazenar as mensagens e suas horas
                 mensagens = []
 
-                # Itera pelas duas últimas mensagens
+                # Itera pelas últimas n_messages
                 for elemento in ultimas_mensagens:
                     # Extrai o texto da mensagem
                     mensagem_texto = elemento.find_element(By.CSS_SELECTOR, 'span[dir="ltr"]').text
@@ -94,12 +110,12 @@ class WhatsAppBot:
                         'hora': mensagem_datetime
                     })
 
-                # Retorna as duas mensagens mais recentes
-                print(f"mensagem: {mensagens}")
+                # Retorna as últimas n mensagens
+                print(f"mensagens: {mensagens}")
                 return mensagens
 
             else:
-                print("Menos de duas mensagens encontradas.")
+                print(f"Menos de {self.conversa_bot.n_messages} mensagens encontradas.")
                 return []
 
         except NoSuchElementException:
@@ -110,6 +126,7 @@ class WhatsAppBot:
         """
         Volta para a tela principal do WhatsApp e clica na primeira conversa da lista.
         """
+        self.bot_ativo = False
         try:
             # Localiza o primeiro contato/conversa na lista de conversas do WhatsApp
             primeira_conversa = self.driver.find_element(By.CSS_SELECTOR,
@@ -123,8 +140,13 @@ class WhatsAppBot:
         except Exception as e:
             print(f"Erro ao tentar voltar para a tela principal: {e}")
 
+
     def enviar_mensagem(self, mensagem):
         try:
+            if not self.bot_ativo:
+                print("Bot de mensagens está desativado.")
+                return
+
             # Espera um tempo para garantir que o campo de mensagem esteja disponível
             time.sleep(2)
 
@@ -181,10 +203,16 @@ def main():
         'padrao': 'Desculpe, não entendi sua pergunta. Vou tentar responder com base no que sei:'
     }
 
-    root.buscar_novas_mensagens()
-    time.sleep(2)
-    # Iniciar o chatbot
-    chatbot(keywords_dict, respostas, bot, root)
+    # Lista de nomes das conversas que você deseja buscar no WhatsApp
+    nomes_das_conversas = ['Deia']
+
+    while(True):
+        # Chamar o método para buscar e selecionar as conversas com os nomes fornecidos
+        root.buscar_novas_mensagens(nomes_das_conversas)
+
+        time.sleep(2)
+        # Iniciar o chatbot
+        chatbot(keywords_dict, respostas, bot, root)
 
 
 

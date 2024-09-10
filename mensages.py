@@ -81,7 +81,7 @@ class ConversaBot:
 
         # Tokenização e processamento
         self.sentencas = nltk.sent_tokenize(self.texto, language='portuguese')
-        self.saudacoes_entrada = ("olá", "bom dia", "boa tarde", "boa noite", "oi", "como vai", "e aí", "oii", "ola", "Oi")
+        self.saudacoes_entrada = ("olá", "bom dia", "boa tarde", "boa noite", "oi", "como vai", "e aí", "oii", "ola", "Oi", "eae", "qvc", "tudo bem?", "qual a boa?", "oiii", "oi td bem")
         self.saudacoes_respostas = ["E aí, Sou o vz-bot-tr1", "E aí, espero que esteja tudo bem contigo", "oi! Sou o vz-bot-tr1", "Oie", "Seja bem-vindo, Sou o vz-bot-tr1, em que posso te ajudar?", "E aí! Sou o vz-bot-tr1, espero que esteja em paz"]
         self.n_messages = 0  # Inicializa o contador de mensagens
 
@@ -142,10 +142,9 @@ class ConversaBot:
 def chatbot(keywords_dict, respostas, bot, root):
     mensagens_armazenadas = []
 
-    # Loop principal
-    while True:
+    while root.bot_ativo:
         # Chama o método last_two_messages, que também atualiza conversa_bot.n_messages
-        mensagens = root.last_two_messages()
+        mensagens = root.last_n_messages()
 
         # Verifica o número de mensagens armazenado no conversa_bot e limita o for loop
         max_mensagens = root.conversa_bot.n_messages
@@ -205,4 +204,4 @@ def chatbot(keywords_dict, respostas, bot, root):
             if contador_mensagens >= max_mensagens:
                 print(f"Limite de {max_mensagens} mensagens alcançado. Fechando o WhatsApp.")
                 root.back_main()  # volta para a conversa padrão
-                return  # Encerra o loop principal
+                #return  # Encerra o loop principal
