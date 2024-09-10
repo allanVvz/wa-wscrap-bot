@@ -34,6 +34,7 @@ class WhatsAppBot:
             # Seleciona o contato baseado nas classes fornecidas
             contato_seletor =f"span[title='{nome_contato}']"
             self.contato = self.driver.find_element(By.CSS_SELECTOR, contato_seletor)
+            self.bot_ativo = True
             self.contato.click()
             time.sleep(2)
 
@@ -55,8 +56,7 @@ class WhatsAppBot:
                 print(f"Conversa encontrada com o nome: {nome}")
 
                 # Verifica se há mensagens não lidas para essa conversa
-                for i in range(1,
-                               10):  # Ajuste o range de acordo com o número máximo de mensagens que deseja buscar
+                for i in range(1, 10):  # Ajuste o range de acordo com o número máximo de mensagens que deseja buscar
                     try:
                         # Tenta encontrar o elemento que indica "i mensagem(s) não lida(s)"
                         self.icone = self.driver.find_element(By.CSS_SELECTOR,
