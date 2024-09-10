@@ -10,7 +10,7 @@ CHROMEDRIVER_PATH = '/usr/bin/chromedriver'  # Atualize com o caminho do seu chr
 
 
 class WhatsAppBot:
-    def __init__(self):
+    def __init__(self, conversa_bot):
         # Configurações do Chrome
         options = Options()
         options.add_argument(
@@ -20,6 +20,7 @@ class WhatsAppBot:
         self.driver = webdriver.Chrome(executable_path=CHROMEDRIVER_PATH, options=options)
         self.driver.get('https://web.whatsapp.com/')
         input('Pressione Enter após escanear o QR Code ou após a página carregar completamente\n')
+        self.conversa_bot = conversa_bot
 
     def buscar_contato(self, nome_contato):
         try:
@@ -37,15 +38,14 @@ class WhatsAppBot:
             print(f"Erro ao buscar contato: {e}")
 
     def buscar_novas_mensagens(self):
-        qMsg = 0
-        #self.icone = self.driver.find_element(By.CSS_SELECTOR, 'span[aria-label]')
-        #self.icone = self.driver.find_element(By.CSS_SELECTOR,  'span[aria-label="1 mensagem não lida"], span[aria-label="2 mensagens não lidas"]')
+        self.conversa_bot.n_messages = 0
         for i in range(1, 10):  # Ajuste o range de acordo com o número máximo de mensagens que você deseja buscar
             try:
                 # Tenta encontrar o elemento com "i mensagem(s) não lida(s)"
                 self.icone = self.driver.find_element(By.CSS_SELECTOR,
                                                       f'span[aria-label="1 mensagem não lida"], span[aria-label="{i} mensagens não lidas"]')
                 print(f"Elemento encontrado com {i} mensagem(s) não lida(s)")
+                self.conversa_bot.n_messages = i
                 break  # Se o elemento for encontrado, interrompe o loop
             except NoSuchElementException:
                 # Se não encontrar o elemento, continua o loop para o próximo valor de i
@@ -95,6 +95,7 @@ class WhatsAppBot:
                     })
 
                 # Retorna as duas mensagens mais recentes
+                print(f"mensagem: {mensagens}")
                 return mensagens
 
             else:
@@ -105,6 +106,22 @@ class WhatsAppBot:
             print("Nenhuma nova mensagem encontrada.")
             return []
 
+    def back_main(self):
+        """
+        Volta para a tela principal do WhatsApp e clica na primeira conversa da lista.
+        """
+        try:
+            # Localiza o primeiro contato/conversa na lista de conversas do WhatsApp
+            primeira_conversa = self.driver.find_element(By.CSS_SELECTOR,
+                                                         "span[title='main']")  # Usando a estrutura da lista de conversas
+
+            # Clica na primeira conversa
+            primeira_conversa.click()
+            print("Primeira conversa selecionada com sucesso.")
+        except NoSuchElementException:
+            print("Erro: Não foi possível encontrar a primeira conversa.")
+        except Exception as e:
+            print(f"Erro ao tentar voltar para a tela principal: {e}")
 
     def enviar_mensagem(self, mensagem):
         try:
@@ -129,35 +146,45 @@ class WhatsAppBot:
 
 
 def main():
-    root = WhatsAppBot()
-    time.sleep(2)
-    root.buscar_novas_mensagens()
-    time.sleep(2)
+    # URL para carregar conteúdo para o ConversaBot
+    url = "https://pt.wikipedia.org/wiki/Oakley,_Inc."  # URL de exemplo
 
-    url = 'https://pt.wikipedia.org/wiki/Oakley,_Inc.'
+    # Criar uma instância do bot de conversação
     bot = ConversaBot(url)
 
-    mensagens = root.last_two_messages()
-    for mensagem in mensagens:
-        print(f"Mensagem: {mensagem['texto']}, Hora: {mensagem['hora']}")
-        human_text = mensagem['texto']
+    root = WhatsAppBot(bot)
+    time.sleep(2)
 
-        if human_text in ['obrigado', 'muito obrigado', 'agradecido']:
-            print("valeu! falou!")
-            root.enviar_mensagem("valeu! falou!")
+    download_nltk_resources()
 
-        elif human_text in ["tchau", "não vou comprar agora"]:
-            print("valeu! falou!")
-            root.enviar_mensagem("valeu! falou!")
-            break
+    # Lista de palavras
+    palavras = ['olá', 'horário', 'olhar']
+    lista_sinonimos = gerar_lista_sinonimos(palavras)
 
-        elif any(saudacao in human_text for saudacao in bot.saudacoes_entrada):
-            print(random.choice(bot.saudacoes_respostas))
-            root.enviar_mensagem(random.choice(bot.saudacoes_respostas))
+    # Adicionar sinônimos manualmente
+    sinonimos_adicionais = {
+        'olá': {'oi'},
+        'horário': {'hora'},
+        'olhar' : {'comprar'}
+    }
+    lista_sinonimos = adicionar_sinonimos(lista_sinonimos, sinonimos_adicionais)
 
-        else:
-            # Gera uma resposta baseada em similaridade
-            root.enviar_mensagem(bot.gerador_respostas(human_text))
+    # Gerar palavras-chave e compilar regex
+    keywords = gerar_keywords(lista_sinonimos)
+    keywords_dict = compilar_keywords(keywords)
+
+    # Dicionário de respostas
+    respostas = {
+        'saudacao': random.choice(bot.saudacoes_respostas),
+        'horario_atendimento': 'Nosso horário de funcionamento é a partir das 16h00 até às 23h00.',
+        'olhar': 'Claro, você pode dar uma olhada em nosso site: www.vzforeal.com',
+        'padrao': 'Desculpe, não entendi sua pergunta. Vou tentar responder com base no que sei:'
+    }
+
+    root.buscar_novas_mensagens()
+    time.sleep(2)
+    # Iniciar o chatbot
+    chatbot(keywords_dict, respostas, bot, root)
 
 
 
