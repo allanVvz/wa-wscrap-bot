@@ -2,9 +2,8 @@
 Just a simple WhatsApp web scraping to collect conversation data.
 
 ## To run:
- - Download [ChromeDriver](https://chromedriver.chromium.org/downloads "ChromeDriver")and place it in the utils folder, if you prefer you can install it and add it to the PATH system
- - Install all dependencies with the command `pip install requirements.txt`
- - After that, run the command `python main.py` and wait for the page to open and show the whatsapp-web interface
+ - Install the dependencies with `pip install -r requirements.txt` to ensure `webdriver-manager` is available
+ - Run `python main.py` and wait for WhatsApp Web to open
  - Use the QR code to connect to WhatsApp and then press Enter on the command line
  - Wait for the program to run and enjoy the collected data ^^
  
