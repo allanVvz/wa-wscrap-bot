@@ -14,14 +14,26 @@ from nltk.corpus import stopwords
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# Função utilitária para garantir que um recurso do NLTK esteja disponível
+def ensure_nltk_resource(name, path):
+    """Verifica se o recurso está disponível; se não, faz o download."""
+    try:
+        nltk.data.find(path)
+    except LookupError:
+        nltk.download(name)
 
-# Função para baixar as dependências do NLTK
+
+# Função para baixar as dependências do NLTK apenas quando necessário
 def download_nltk_resources():
-    nltk.download('wordnet')
-    nltk.download('omw')
-    nltk.download('punkt')
-    nltk.download('rslp')
-    nltk.download('stopwords')
+    resources = [
+        ('wordnet', 'corpora/wordnet'),
+        ('omw', 'corpora/omw'),
+        ('punkt', 'tokenizers/punkt'),
+        ('rslp', 'stemmers/rslp'),
+        ('stopwords', 'corpora/stopwords'),
+    ]
+    for name, path in resources:
+        ensure_nltk_resource(name, path)
 
 
 # Função para gerar lista de sinônimos
