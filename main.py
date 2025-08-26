@@ -1,12 +1,12 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 from mensages import *
 from selenium.common.exceptions import NoSuchElementException
 from datetime import datetime
-
-CHROMEDRIVER_PATH = '/usr/bin/chromedriver'  # Atualize com o caminho do seu chromedriver
 
 
 class WhatsAppBot:
@@ -17,7 +17,7 @@ class WhatsAppBot:
             'user-data-dir=./User_Data')  # Salva os dados do usuário para evitar escanear o QR Code novamente
 
         # Inicializa o WebDriver
-        self.driver = webdriver.Chrome(executable_path=CHROMEDRIVER_PATH, options=options)
+        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
         self.driver.get('https://web.whatsapp.com/')
         input('Pressione Enter após escanear o QR Code ou após a página carregar completamente\n')
         self.conversa_bot = conversa_bot
