@@ -168,6 +168,8 @@ class WhatsAppBot:
 
 
 def main():
+    download_nltk_resources()
+
     # URL para carregar conteúdo para o ConversaBot
     url = "https://pt.wikipedia.org/wiki/Oakley,_Inc."  # URL de exemplo
 
@@ -176,8 +178,6 @@ def main():
 
     root = WhatsAppBot(bot)
     time.sleep(2)
-
-    download_nltk_resources()
 
     # Lista de palavras
     palavras = ['olá', 'horário', 'olhar']
