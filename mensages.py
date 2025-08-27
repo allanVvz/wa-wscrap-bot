@@ -85,12 +85,20 @@ def compilar_keywords(keywords):
 
 # Classe ConversaBot para gerar respostas dinâmicas
 class ConversaBot:
-    def __init__(self, url):
+    def __init__(self, url, timeout=15):
         headers = {"User-Agent": "Mozilla/5.0"}
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as response:
-            self.codigo_html = response.read()
-        self.html_processado = bs.BeautifulSoup(self.codigo_html, 'lxml')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                self.codigo_html = response.read()  # bytes
+        except urllib.error.HTTPError as e:
+            # Ex.: 403/404 — você pode logar e reerguer a exceção
+            raise RuntimeError(f"HTTPError {e.code} ao acessar {url}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Erro de rede ao acessar {url}: {e.reason}") from e
+
+        # Parser do BeautifulSoup (usa lxml se disponível)
+        self.html_processado = bs.BeautifulSoup(self.codigo_html, "lxml")
         self.texto = self._extrair_texto()
 
         # Tokenização e processamento
