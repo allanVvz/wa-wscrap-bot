@@ -86,7 +86,10 @@ def compilar_keywords(keywords):
 # Classe ConversaBot para gerar respostas dinâmicas
 class ConversaBot:
     def __init__(self, url):
-        self.codigo_html = urllib.request.urlopen(url).read()
+        headers = {"User-Agent": "Mozilla/5.0"}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as response:
+            self.codigo_html = response.read()
         self.html_processado = bs.BeautifulSoup(self.codigo_html, 'lxml')
         self.texto = self._extrair_texto()
 
