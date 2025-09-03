@@ -1,4 +1,8 @@
+﻿#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 import re
+import os
+from datetime import datetime
 import nltk
 from nltk.corpus import wordnet
 import urllib.request
@@ -14,20 +18,21 @@ from nltk.corpus import stopwords
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-# Função utilitária para garantir que um recurso do NLTK esteja disponível
+# Função utilitária para garantir que um recurso do NLTK esteja disponí­vel
 def ensure_nltk_resource(name, path):
-    """Verifica se o recurso está disponível; se não, faz o download."""
+    """Verifica se o recurso está disponí­vel; se não, faz o download."""
     try:
         nltk.data.find(path)
     except LookupError:
         nltk.download(name)
 
 
-# Função para baixar as dependências do NLTK apenas quando necessário
+# Função para baixar as dependÃªncias do NLTK apenas quando necessário
 def download_nltk_resources():
     resources = [
         ('wordnet', 'corpora/wordnet'),
-        ('omw', 'corpora/omw'),
+        # Necessário para wordnet em pt-BR: OMW 1.4
+        ('omw-1.4', 'corpora/omw-1.4'),
         ('punkt', 'tokenizers/punkt'),
         ('rslp', 'stemmers/rslp'),
         ('stopwords', 'corpora/stopwords'),
@@ -53,7 +58,7 @@ def gerar_lista_sinonimos(palavras):
 # Função para adicionar sinônimos manualmente
 def adicionar_sinonimos(lista_sinonimos, sinonimos_adicionais):
     for palavra, sinonimos in sinonimos_adicionais.items():
-        lista_sinonimos[palavra].update(sinonimos)
+        lista_sinonimos.setdefault(palavra, set()).update(sinonimos)
     return lista_sinonimos
 
 
@@ -65,21 +70,50 @@ def gerar_keywords(lista_sinonimos):
         'olhar': []
     }
 
-    for sin in list(lista_sinonimos['olá']):
+    for sin in list(lista_sinonimos['ola']):
         keywords['saudacao'].append(f'.*\\b{sin}\\b.*')
+    # incluir variações acentuadas e sem acento para saudação
+    if 'olá' in lista_sinonimos:
+        for sin in list(lista_sinonimos['olá']):
+            keywords['saudacao'].append(f'.*\\b{sin}\\b.*')
+    # termos base caso a lista venha vazia
+    for termo in ['olá', 'ola', 'oi', 'oie', 'bom dia', 'boa tarde', 'boa noite', 'e aí', 'e ai']:
+        keywords['saudacao'].append(f'.*\\b{termo}\\b.*')
     for sin in list(lista_sinonimos['horário']):
         keywords['horario_atendimento'].append(f'.*\\b{sin}\\b.*')
-    for sin in list(lista_sinonimos['olhar']):
+    # considerar chave sem acento tambem
+    if 'horario' in lista_sinonimos:
+        for sin in list(lista_sinonimos['horario']):
+            keywords['horario_atendimento'].append(f'.*\\b{sin}\\b.*')
+    # termos base para cobrir variações com/sem acento
+    for termo in ['horário', 'horario', 'funcionamento', 'atendimento', 'abre', 'fecha']:
+        keywords['horario_atendimento'].append(f'.*\\b{termo}\\b.*')
+    # palavras-chave para intenção de compra/olhar (usa sinônimos definidos em main)
+    for sin in list(lista_sinonimos.get('olhar', [])):
         keywords['olhar'].append(f'.*\\b{sin}\\b.*')
+
+    # Não manter uma intent separada 'ola'; tratar tudo como 'saudacao'
 
     return keywords
 
 
-# Função para compilar as expressões regulares para cada intenção
-def compilar_keywords(keywords):
+# Função para compilar as expressôes regulares para cada intenção
+def compilar_keywords(keywords, debug=False):
+    if not debug:
+        try:
+            debug = bool(int(os.environ.get('BOT_DEBUG', '0')))
+        except Exception:
+            debug = False
     keywords_dict = {}
     for intent, keys in keywords.items():
-        keywords_dict[intent] = re.compile('|'.join(keys))
+        # Remove vazios para evitar pattern que casa tudo
+        keys = [k for k in keys if k]
+        if not keys:
+            continue
+        pattern_str = '|'.join(keys)
+        keywords_dict[intent] = re.compile(pattern_str, re.IGNORECASE)
+        if debug:
+            print(f"[DEBUG] Intent '{intent}' pattern: {pattern_str}")
     return keywords_dict
 
 
@@ -92,19 +126,19 @@ class ConversaBot:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 self.codigo_html = response.read()  # bytes
         except urllib.error.HTTPError as e:
-            # Ex.: 403/404 — você pode logar e reerguer a exceção
+            # Ex.: 403/404 â€” vocÃª pode logar e reerguer a exceção
             raise RuntimeError(f"HTTPError {e.code} ao acessar {url}") from e
         except urllib.error.URLError as e:
             raise RuntimeError(f"Erro de rede ao acessar {url}: {e.reason}") from e
 
-        # Parser do BeautifulSoup (usa lxml se disponível)
+        # Parser do BeautifulSoup (usa lxml se disponí­vel)
         self.html_processado = bs.BeautifulSoup(self.codigo_html, "lxml")
         self.texto = self._extrair_texto()
 
         # Tokenização e processamento
         self.sentencas = nltk.sent_tokenize(self.texto, language='portuguese')
-        self.saudacoes_entrada = ("olá", "bom dia", "boa tarde", "boa noite", "oi", "como vai", "e aí", "oii", "ola", "Oi", "eae", "qvc", "tudo bem?", "qual a boa?", "oiii", "oi td bem")
-        self.saudacoes_respostas = ["E aí, Sou o vz-bot-tr1", "E aí, espero que esteja tudo bem contigo", "oi! Sou o vz-bot-tr1", "Oie", "Seja bem-vindo, Sou o vz-bot-tr1, em que posso te ajudar?", "E aí! Sou o vz-bot-tr1, espero que esteja em paz"]
+        self.saudacoes_entrada = ("olá", "bom dia", "boa tarde", "boa noite", "oi", "como vai", "e aí­", "oii", "ola", "Oi", "eae", "qvc", "tudo bem?", "qual a boa?", "oiii", "oi td bem")
+        self.saudacoes_respostas = ["E aí, Sou o vz-bot-tr1", "E aí­, espero que esteja tudo bem contigo", "oi! Sou o vz-bot-tr1", "Oie", "Seja bem vindo, Sou o vz-bot-tr1, em que posso te ajudar?", "E aí­! Sou o vz-bot-tr1, espero que esteja em paz"]
         self.n_messages = 0  # Inicializa o contador de mensagens
 
     def _extrair_texto(self):
@@ -153,7 +187,7 @@ class ConversaBot:
         vector_matched = matched_vector[-2]
 
         # Verifica se encontrou uma resposta adequada
-        resposta = "PROMOÇÃO ATÉ DIA 14" if vector_matched == 0 else self.sentencas[similar_sentence_number]
+        resposta = "Não entendi o que você quis dizer" if vector_matched == 0 else self.sentencas[similar_sentence_number]
 
         # Remove a entrada do usuário
         self.sentencas.pop()
@@ -161,69 +195,130 @@ class ConversaBot:
 
 
 # Função principal do chatbot
-def chatbot(keywords_dict, respostas, bot, root):
-    mensagens_armazenadas = []
+
+def chatbot(keywords_dict, respostas, bot, root, debug=False):
+    mensagens_armazenadas = []  # legado local (não usado para dedupe entre ciclos)
 
     while root.bot_ativo:
-        # Chama o método last_two_messages, que também atualiza conversa_bot.n_messages
+        if not debug:
+            try:
+                debug = bool(int(os.environ.get('BOT_DEBUG', '0')))
+            except Exception:
+                debug = False
         mensagens = root.last_n_messages()
-
-        # Verifica o número de mensagens armazenado no conversa_bot e limita o for loop
         max_mensagens = root.conversa_bot.n_messages
+        if debug:
+            print(f"[DEBUG] Início ciclo. bot_ativo={root.bot_ativo}")
+            try:
+                ident_dbg = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
+            except Exception:
+                ident_dbg = 'desconhecido'
+            print(f"[DEBUG] Chat atual: {ident_dbg}")
+            print(f"[DEBUG] last_n_messages(): {mensagens}")
+            print(f"[DEBUG] contador n_messages alvo: {max_mensagens}")
 
-        # Limitar o número de mensagens a serem processadas de acordo com n_messages
-        mensagens_a_processar = mensagens[:max_mensagens]  # Limita ao número de mensagens em n_messages
-        contador_mensagens = 0
+        # Fallback: se nao houver contador de nao lidas, leia ultimas do cliente
+        if not max_mensagens or max_mensagens <= 0:
+            textos_cli = root.get_ultimas_mensagens_cliente(3)
+            if not textos_cli:
+                return
+            mensagens_a_processar = [
+                {'texto': t, 'hora': None} for t in textos_cli if t
+            ]
+            if debug:
+                print(f"[DEBUG] Fallback ultimas mensagens cliente: {textos_cli}")
+        else:
+            mensagens_a_processar = mensagens[:max_mensagens]
+        if debug:
+            print(f"[DEBUG] mensagens_a_processar: {mensagens_a_processar}")
+        novas_entradas = []
 
-        # Verificar se a mensagem já foi lida e processar apenas as novas
+        # Mapa persistente de mensagens já processadas por conversa
+        try:
+            ident_global = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
+        except Exception:
+            ident_global = 'desconhecido'
+        if not hasattr(root, 'processed_msgs_map'):
+            root.processed_msgs_map = {}
+        processed_set = root.processed_msgs_map.setdefault(ident_global, set())
+
         for mensagem in mensagens_a_processar:
-            if mensagem not in mensagens_armazenadas:
-                # Criar um identificador único da mensagem (por exemplo, texto + hora)
-                identificador_unico = (mensagem['texto'], mensagem['hora'])
+            # chave de dedupe: texto normalizado (não usar hora, que varia a cada fallback)
+            entrada = str(mensagem.get('texto', '')).strip().lower()
+            hora_val = mensagem.get('hora')
+            if isinstance(hora_val, datetime):
+                hora_key = hora_val.strftime("%Y-%m-%dT%H:%M")
+            else:
+                hora_key = str(hora_val) if hora_val is not None else ''
+            chave = (entrada, hora_key)
+            if not entrada:
+                continue
+            if chave in processed_set:
+                if debug:
+                    print(f"[DEBUG] Ignorando repetida (já processada): '{entrada}'")
+                continue
+            try:
+                ident = ident_global
+                root.log_conversa('cliente', ident, entrada)
+            except Exception:
+                pass
+            processed_set.add(chave)
+            novas_entradas.append(entrada)
+        if debug:
+            print(f"[DEBUG] novas_entradas: {novas_entradas}")
 
-                # Processar apenas mensagens não armazenadas
-                if identificador_unico not in mensagens_armazenadas:
-                    mensagens_armazenadas.append(identificador_unico)  # Armazenar o identificador da nova mensagem
-                    entrada = str(mensagem['texto'].lower())
-                    print(f"Identificador: {identificador_unico}")
-                else:
-                    continue  # Ignorar mensagens repetidas
+        if not novas_entradas:
+            return
 
-                print(f"Nova mensagem: {entrada}, Hora: {mensagem['hora']}")
+        sentidos = {}
+        for entrada in novas_entradas:
+            matched_intent = None
+            for intent, pattern in keywords_dict.items():
+                if pattern.search(entrada):
+                    print(f"[DEBUG] Intenção encontrada: {intent} para '{entrada}'")
+                    matched_intent = intent
+                    break
+            categoria = matched_intent if (matched_intent and matched_intent in respostas) else 'wiki'
+            if not matched_intent:
+                print(f"[DEBUG] Intent fallback 'wiki' para '{entrada}'")
+            if debug:
+                print(f"[DEBUG] Intent categorizada: {categoria} para '{entrada}'")
+            sentidos.setdefault(categoria, []).append(entrada)
+        if debug:
+            print(f"[DEBUG] sentidos agrupados: {sentidos}")
 
-                # Checar se o usuário quer sair
-                if entrada == 'sair':
-                    print("Obrigado pela visita.")
-                    root.enviar_mensagem("Obrigado pela visita. Até logo!")
-                    root.back_main()  # Fechar o WhatsApp
-                    return  # Encerra o loop principal
+        try:
+            ident = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
+            root.senses_map[ident] = sentidos
+            root.senses_count[ident] = len(sentidos)
+        except Exception:
+            pass
 
-                # Tentar encontrar a intenção correspondente
-                matched_intent = None
-                for intent, pattern in keywords_dict.items():
-                    if re.search(pattern, entrada):
-                        matched_intent = intent
-                        break
-
-                # Decidir qual chave de resposta usar
-                if matched_intent in respostas:
-                    key = matched_intent
-                else:
-                    key = 'padrao'
-
-                # Enviar a resposta correspondente
-                if key == 'padrao':
-                    resposta = bot.gerador_respostas(entrada)
-                else:
-                    resposta = respostas[key]
-
+        for categoria, entradas in sentidos.items():
+            if debug:
+                print(f"[DEBUG] Respondendo categoria '{categoria}' com entradas: {entradas}")
+            if categoria == 'saudacao':
+                resposta = random.choice(bot.saudacoes_respostas)
+            elif categoria in ('horario_atendimento', 'olhar'):
+                resposta = respostas.get(categoria) or ''
+            else:
+                combinado = ' '.join(entradas)
+                resposta = bot.gerador_respostas(combinado)
+            if resposta:
+                if debug:
+                    print(f"[DEBUG] Enviando resposta: {resposta}")
                 root.enviar_mensagem(resposta)
 
-                # Incrementar o contador de mensagens processadas
-                contador_mensagens += 1
+        # Conclui o ciclo mantendo o bot ativo para próximas interações
+        if debug:
+            print("[DEBUG] Ciclo do chatbot concluído; bot permanece ativo.")
+        return
 
-            # Verificar se já processou o número máximo de mensagens (n_messages)
-            if contador_mensagens >= max_mensagens:
-                print(f"Limite de {max_mensagens} mensagens alcançado. Fechando o WhatsApp.")
-                root.back_main()  # volta para a conversa padrão
-                #return  # Encerra o loop principal
+
+
+
+
+
+
+
+

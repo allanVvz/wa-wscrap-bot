@@ -1,8 +1,11 @@
 selenium==4.11.2
-urllib3==1.25.10
+urllib3==1.26.10
 nltk==3.8.1
 beautifulsoup4==4.12.2
-lxml==4.9.3
-numpy==1.25.2
-scikit-learn==1.3.2
+# lxml 4.9.x não possui wheel para Python >=3.12 em Windows; use 5.x
+lxml==5.3.0
+# Para Python 3.13, Numpy 1.25.x não tem wheel; use 2.2+
+numpy>=2.2.0,<3
+# scikit-learn 1.3.x não suporta Python 3.13; use 1.6+ (wheels disponíveis)
+scikit-learn>=1.6.0,<2
 webdriver-manager==4.0.2

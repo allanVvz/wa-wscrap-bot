@@ -1,4 +1,45 @@
+# Virtual environments
+.venv/
 venv/
-.idea
+env/
+ENV/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test/coverage caches
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE/editor
+.idea/
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Project-specific
 User_Data/
 collected_data/
+tmp_*.txt
