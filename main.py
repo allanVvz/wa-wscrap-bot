@@ -24,6 +24,11 @@ import unicodedata
 
 
 class WhatsAppBot:
+    ACTIVE_CHAT_SELECTOR = "#pane-side > div:nth-child(1) > div > div > div:nth-child(2) > div > div > div > div._ak8l._ap1_ > div._ak8o > div._ak8q > div > div > span"
+    ALL_FILTER_SELECTOR = "#all-filter"
+    UNREAD_FILTER_SELECTOR = "#unread-filter > div > div"
+    DEFAULT_INACTIVITY_TIMEOUT = 5.0
+
     def __init__(self, conversa_bot):
         # Configuraçoes do Chrome
         def build_options(user_data_dir=None):
@@ -96,6 +101,24 @@ class WhatsAppBot:
         self.conversa_bot = conversa_bot
 
         self.bot_ativo = True
+        self.conversa_corrente_ativa = False
+        self.conversa_corrente_nome = None
+        self.conversa_corrente_last_seen = 0.0
+        self.conversa_corrente_total_incoming = 0
+        try:
+            timeout_cfg = float(os.environ.get('CHAT_TIMEOUT_SECONDS', self.DEFAULT_INACTIVITY_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout_cfg = self.DEFAULT_INACTIVITY_TIMEOUT
+        self.timeout_conversa_corrente = max(timeout_cfg, 0.0)
+
+
+    def _contar_mensagens_entrada(self):
+        """Conta mensagens de entrada visiveis na conversa atual."""
+        try:
+            elementos = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in")
+            return len(elementos)
+        except Exception:
+            return self.conversa_corrente_total_incoming
 
     def buscar_contato(self, nome_contato):
         try:
@@ -111,6 +134,36 @@ class WhatsAppBot:
         except Exception as e:
             print(f"Erro ao buscar contato: {e}")
 
+    def atualizar_conversa_corrente(self, alvo_nome):
+        """Atualiza o indicador de conversa corrente com base no seletor informado."""
+        alvo_normalizado = (alvo_nome or '').strip().lower()
+        ativo_nome = ''
+        try:
+            ativo_elem = self.driver.find_element(By.CSS_SELECTOR, self.ACTIVE_CHAT_SELECTOR)
+            ativo_nome = (ativo_elem.text or '').strip()
+        except NoSuchElementException:
+            pass
+        ativo_normalizado = (ativo_nome or '').strip().lower()
+        is_active = bool(alvo_normalizado and ativo_normalizado == alvo_normalizado)
+        if is_active:
+            if not self.conversa_corrente_ativa or self.conversa_corrente_nome != alvo_nome:
+                self.conversa_corrente_total_incoming = self._contar_mensagens_entrada()
+                self.conversa_corrente_last_seen = time.time()
+            else:
+                total_atual = self._contar_mensagens_entrada()
+                if total_atual > self.conversa_corrente_total_incoming:
+                    self.conversa_corrente_total_incoming = total_atual
+                    self.conversa_corrente_last_seen = time.time()
+            self.conversa_corrente_ativa = True
+            self.conversa_corrente_nome = alvo_nome
+        else:
+            if self.conversa_corrente_nome == alvo_nome:
+                self.conversa_corrente_ativa = False
+                self.conversa_corrente_nome = None
+                self.conversa_corrente_total_incoming = 0
+                self.conversa_corrente_last_seen = 0.0
+        return is_active
+
     def buscar_novas_mensagens(self, nomes_conversas):
         """
         Busca e clica em conversas com nomes específicos e verifica se há mensagens não lidas.
@@ -119,6 +172,10 @@ class WhatsAppBot:
         self.conversa_bot.n_messages = 0
 
         for nome in nomes_conversas:
+            if self.atualizar_conversa_corrente(nome):
+                print(f"[DEBUG] Conversa '{nome}' esta ativa; fluxo alternativo sem badge.")
+                self.conversa_bot.n_messages = 0
+                return
             try:
                 # Localiza o elemento da conversa pelo nome
                 contato_seletor = f"span[title='{nome}']"
@@ -144,16 +201,34 @@ class WhatsAppBot:
 
                 # Atualiza o objeto de conversa com a quantidade de mensagens
                 self.conversa_bot.n_messages = n_mensagens
+                print(f"[DEBUG] Contador de nao lidas para '{nome}': {self.conversa_bot.n_messages}")
                 if n_mensagens > 0:
                     print(f"Conversa encontrada com o nome: {nome}")
 
                 # Clica na conversa correta (elemento principal, não o badge)
                 conversa_element.click()
+                self.conversa_corrente_ativa = True
+                self.conversa_corrente_nome = nome
+                self.conversa_corrente_last_seen = time.time()
+                self.conversa_corrente_total_incoming = self._contar_mensagens_entrada()
                 return  # Sai do método após clicar na conversa correta
 
             except NoSuchElementException:
                 print(f"Conversa com o nome {nome} não encontrada.")
                 continue
+
+    def clicar_filtro_generico(self, seletor, descricao):
+        """Clica em um filtro superior identificado pelo seletor informado."""
+        try:
+            alvo = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, seletor))
+            )
+            alvo.click()
+            print(f"[DEBUG] Filtro '{descricao}' selecionado.")
+            return True
+        except Exception as e:
+            print(f"[AVISO] Nao foi possivel selecionar o filtro '{descricao}': {type(e).__name__}: {e}")
+            return False
 
     def clicar_filtro_nao_lidas(self):
         """
@@ -162,12 +237,44 @@ class WhatsAppBot:
         """
         try:
             filtro = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "#unread-filter > div > div"))
+                EC.element_to_be_clickable((By.CSS_SELECTOR, self.UNREAD_FILTER_SELECTOR))
             )
             filtro.click()
             print("Filtro 'mensagens não lidas' clicado.")
         except Exception as e:
             print(f"Não foi possã­vel clicar no filtro de não lidas: {e}")
+
+    def checar_timeout_conversa_corrente(self):
+        """Verifica se a conversa ativa excedeu o tempo de inatividade."""
+        if not self.conversa_corrente_ativa:
+            return
+        limite = getattr(self, "timeout_conversa_corrente", self.DEFAULT_INACTIVITY_TIMEOUT)
+        if limite <= 0:
+            return
+        ultimo = self.conversa_corrente_last_seen or 0.0
+        if (time.time() - ultimo) >= limite:
+            nome = self.conversa_corrente_nome or "desconhecida"
+            print(f"[DEBUG] Timeout de inatividade atingido para '{nome}'. Alternando para conversa 'main'.")
+            self.ir_para_conversa_main()
+
+    def ir_para_conversa_main(self):
+        """Alterna temporariamente para o filtro "tudo" e seleciona a conversa "main"."""
+        if self.clicar_filtro_generico(self.ALL_FILTER_SELECTOR, "tudo"):
+            try:
+                main_chat = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, "span[title='main']"))
+                )
+                main_chat.click()
+                print("[DEBUG] Conversa 'main' clicada.")
+            except Exception as e:
+                print(f"[AVISO] Falha ao clicar na conversa 'main': {type(e).__name__}: {e}")
+        time.sleep(1)
+        self.clicar_filtro_nao_lidas()
+        self.conversa_corrente_ativa = False
+        self.conversa_corrente_nome = None
+        self.conversa_corrente_total_incoming = 0
+        self.conversa_corrente_last_seen = 0.0
+        self.conversa_bot.n_messages = 0
 
     def last_n_messages(self):
         try:
@@ -199,6 +306,7 @@ class WhatsAppBot:
                     mensagem_datetime = datetime.now()
 
                 mensagens.append({'texto': mensagem_texto, 'hora': mensagem_datetime})
+            print(f"[DEBUG] Lendo {len(mensagens)} mensagem(ns) com contador n_messages={n}")
 
             print(f"mensagens: {mensagens}")
             return mensagens
@@ -435,6 +543,10 @@ class WhatsAppBot:
             elems = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in div.copyable-text[data-pre-plain-text] span[dir='ltr']")
             if not elems:
                 elems = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in span[dir='ltr']")
+            total_incoming = self._contar_mensagens_entrada()
+            if self.conversa_corrente_ativa and total_incoming > self.conversa_corrente_total_incoming:
+                self.conversa_corrente_total_incoming = total_incoming
+                self.conversa_corrente_last_seen = time.time()
             textos = [e.text.strip() for e in elems if e.text and e.text.strip()]
             return textos[-n:] if n and n > 0 else []
         except Exception as e:
@@ -510,15 +622,17 @@ def main():
     }
 
     # Lista de nomes das conversas que você deseja buscar no WhatsApp
-    nomes_das_conversas = ['Tock']
+    nomes_das_conversas = ['Iza']
 
     while(True):
+        root.checar_timeout_conversa_corrente()
         # Chamar o método para buscar e selecionar as conversas com os nomes fornecidos
         root.buscar_novas_mensagens(nomes_das_conversas)
 
         time.sleep(2)
         # Iniciar o chatbot
         chatbot(keywords_dict, respostas, bot, root)
+        root.checar_timeout_conversa_corrente()
 
 
 
