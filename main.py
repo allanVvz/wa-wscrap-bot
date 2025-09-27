@@ -23,11 +23,55 @@ import re
 import unicodedata
 
 
+class FallbackConversaBot:
+    def __init__(self):
+        self.sentencas = []
+        self.saudacoes_respostas = [
+            "Olá! No momento não consegui acessar todas as informações, mas posso te ajudar com o básico.",
+            "Oi! Estou aqui para te ajudar mesmo sem a base completa.",
+        ]
+        self.n_messages = 0
+
+    def gerador_respostas(self, entrada_usuario):
+        if entrada_usuario:
+            return (
+                "Ainda estou carregando informações para te responder melhor. "
+                "Pode me dizer qual produto procura ou deixar uma mensagem?"
+            )
+        return "Como posso te ajudar hoje?"
+
+
 class WhatsAppBot:
     ACTIVE_CHAT_SELECTOR = "#pane-side > div:nth-child(1) > div > div > div:nth-child(2) > div > div > div > div._ak8l._ap1_ > div._ak8o > div._ak8q > div > div > span"
     ALL_FILTER_SELECTOR = "#all-filter"
     UNREAD_FILTER_SELECTOR = "#unread-filter > div > div"
-    DEFAULT_INACTIVITY_TIMEOUT = 5.0
+    DEFAULT_INACTIVITY_TIMEOUT = 20.0
+
+    @staticmethod
+    def _sanitize_nome(valor):
+        texto = (valor or '').strip()
+        if not texto:
+            return ''
+        so_digitos = re.sub(r'\D', '', texto)
+        if len(so_digitos) >= 6:
+            return so_digitos
+        texto_sem_pontuacao = re.sub(r'[^\w\s]', '', texto).replace('_', ' ').strip()
+        return texto_sem_pontuacao.casefold()
+
+    @staticmethod
+    def _parse_unread_badge(elemento):
+        if elemento is None:
+            return 0
+        texto = (elemento.get_attribute('aria-label') or elemento.text or '').strip()
+        if not texto:
+            return 0
+        match = re.search(r"(\d+)", texto)
+        if not match:
+            return 0
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return 0
 
     def __init__(self, conversa_bot):
         # Configuraçoes do Chrome
@@ -120,6 +164,24 @@ class WhatsAppBot:
         except Exception:
             return self.conversa_corrente_total_incoming
 
+    def _localizar_conversa_por_nome(self, nome_original):
+        nome_limpo = self._sanitize_nome(nome_original)
+        seletor = f"span[title='{nome_original}']"
+        try:
+            return self.driver.find_element(By.CSS_SELECTOR, seletor)
+        except NoSuchElementException:
+            pass
+        try:
+            pane = self.driver.find_element(By.ID, 'pane-side')
+        except NoSuchElementException as exc:
+            raise exc
+        candidatos = pane.find_elements(By.CSS_SELECTOR, "span[title]")
+        for candidato in candidatos:
+            titulo = candidato.get_attribute('title') or candidato.text or ''
+            if self._sanitize_nome(titulo) == nome_limpo:
+                return candidato
+        raise NoSuchElementException(f"Conversa com o nome {nome_original} não encontrada.")
+
     def buscar_contato(self, nome_contato):
         try:
             self.caixa_de_pesquisa = self.driver.find_element(By.CSS_SELECTOR, "div[contenteditable='true'][aria-label='Pesquisar']")
@@ -171,46 +233,57 @@ class WhatsAppBot:
         """
         self.conversa_bot.n_messages = 0
 
+        nao_lidas_cache = self.listar_contatos_nao_lidos()
+        nao_lidas_map = {
+            self._sanitize_nome(item.get('nome')): int(item.get('nao_lidas', 0))
+            for item in nao_lidas_cache
+        }
+
         for nome in nomes_conversas:
+            nome_sanit = self._sanitize_nome(nome)
             if self.atualizar_conversa_corrente(nome):
                 print(f"[DEBUG] Conversa '{nome}' esta ativa; fluxo alternativo sem badge.")
                 self.conversa_bot.n_messages = 0
                 return
             try:
-                # Localiza o elemento da conversa pelo nome
-                contato_seletor = f"span[title='{nome}']"
-                conversa_element = self.driver.find_element(By.CSS_SELECTOR, contato_seletor)
+                conversa_element = self._localizar_conversa_por_nome(nome)
 
-                # Inicializa o contador de mensagens não lidas
                 n_mensagens = 0
+                badges = conversa_element.find_elements(
+                    By.CSS_SELECTOR,
+                    "span[aria-label$='mensagem não lida'], span[aria-label$='mensagens não lidas']"
+                )
+                for badge in badges:
+                    qtd = self._parse_unread_badge(badge)
+                    if qtd > n_mensagens:
+                        n_mensagens = qtd
 
-                # Procura pelo badge de mensagens não lidas dentro do elemento da conversa
-                for i in range(1, 10):
-                    try:
-                        badge = conversa_element.find_element(
-                            By.CSS_SELECTOR,
-                            f'span[aria-label="1 mensagem não lida"], span[aria-label="{i} mensagens não lidas"]'
+                if n_mensagens <= 0 and nome_sanit:
+                    fallback_qtd = nao_lidas_map.get(nome_sanit, 0)
+                    if fallback_qtd > 0 and os.environ.get('BOT_DEBUG') == '1':
+                        print(
+                            f"[DEBUG] Utilizando contagem cacheada de não lidas para '{nome}': {fallback_qtd}"
                         )
-                        n_mensagens = i
-                        print(f"Elemento encontrado com {i} mensagem(s) nao lida(s)")
-                        break
-                    except NoSuchElementException:
-                        continue
-                else:
-                    pass  # não imprimir quando não houver não lidas
+                    n_mensagens = fallback_qtd
 
-                # Atualiza o objeto de conversa com a quantidade de mensagens
-                self.conversa_bot.n_messages = n_mensagens
-                print(f"[DEBUG] Contador de nao lidas para '{nome}': {self.conversa_bot.n_messages}")
-                if n_mensagens > 0:
+                self.conversa_bot.n_messages = max(0, n_mensagens)
+                print(
+                    f"[DEBUG] Contador de nao lidas para '{nome}': {self.conversa_bot.n_messages}"
+                )
+                if self.conversa_bot.n_messages > 0:
                     print(f"Conversa encontrada com o nome: {nome}")
 
-                # Clica na conversa correta (elemento principal, não o badge)
                 conversa_element.click()
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.ID, 'main'))
+                )
                 self.conversa_corrente_ativa = True
                 self.conversa_corrente_nome = nome
                 self.conversa_corrente_last_seen = time.time()
                 self.conversa_corrente_total_incoming = self._contar_mensagens_entrada()
+                if self.conversa_bot.n_messages <= 0:
+                    # pequena espera para garantir que a lista atualize antes dos próximos passos
+                    time.sleep(0.6)
                 return  # Sai do método após clicar na conversa correta
 
             except NoSuchElementException:
@@ -315,6 +388,70 @@ class WhatsAppBot:
             print("Nenhuma nova mensagem encontrada (entrada).")
             return []
 
+    def get_mensagens_apos_resposta(self, limite=5):
+        """
+        Retorna mensagens do cliente posteriores à última resposta enviada pelo bot.
+        Se não houver resposta anterior, retorna somente a mensagem mais recente do cliente.
+        """
+        try:
+            elementos = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in, div.message-out")
+        except Exception as e:
+            print(f"[AVISO] Falha ao coletar timeline de mensagens: {type(e).__name__}: {e}")
+            return []
+
+        if not elementos:
+            return []
+
+        registros = []
+        for elem in elementos[-80:]:  # limita a inspeção aos itens mais recentes
+            try:
+                classes = elem.get_attribute('class') or ''
+            except Exception:
+                continue
+            tipo = 'in' if 'message-in' in classes else 'out' if 'message-out' in classes else None
+            if not tipo:
+                continue
+            try:
+                base = elem.find_element(By.CSS_SELECTOR, "div.copyable-text[data-pre-plain-text]")
+            except NoSuchElementException:
+                continue
+            texto = ''
+            try:
+                texto = base.find_element(By.CSS_SELECTOR, "span[dir='ltr']").text
+            except NoSuchElementException:
+                texto = (base.text or '').strip()
+            pre_plain = base.get_attribute('data-pre-plain-text') or ''
+            try:
+                hora_raw = pre_plain.split(']')[0][1:]
+                timestamp = datetime.strptime(hora_raw, "%H:%M, %d/%m/%Y")
+            except Exception:
+                timestamp = datetime.now()
+            registros.append({'tipo': tipo, 'texto': texto.strip(), 'hora': timestamp})
+
+        if not registros:
+            return []
+
+        ultima_resposta_idx = None
+        for idx in range(len(registros) - 1, -1, -1):
+            if registros[idx]['tipo'] == 'out':
+                ultima_resposta_idx = idx
+                break
+
+        novas = []
+        if ultima_resposta_idx is not None:
+            for item in registros[ultima_resposta_idx + 1:]:
+                if item['tipo'] == 'in' and item['texto']:
+                    novas.append({'texto': item['texto'], 'hora': item['hora']})
+        else:
+            recentes_in = [r for r in registros if r['tipo'] == 'in' and r['texto']]
+            if recentes_in:
+                novas.append({'texto': recentes_in[-1]['texto'], 'hora': recentes_in[-1]['hora']})
+
+        if not novas:
+            return []
+
+        return novas[-limite:]
+
     def back_main(self):
         """
         Volta para a tela principal do WhatsApp e clica na primeira conversa da lista.
@@ -414,7 +551,7 @@ class WhatsAppBot:
                 if len(so_digitos) >= 6:
                     nome_sanit = so_digitos
                 else:
-                    nome_sanit = re.sub(r'[^\w\s]', '', nome_raw).replace('_', ' ').strip()
+                    nome_sanit = re.sub(r'[^\w\s]', '', nome_raw).replace('_', ' ').strip().casefold()
 
                 # Deduplicaço: agrupar pelo nome sanitizado, manter maior contagem
                 existente = agregados.get(nome_sanit)
@@ -578,7 +715,14 @@ def main():
 
     # Criar ConversaBot (Wikipedia)
     url = os.environ.get('WIKI_URL', 'https://pt.wikipedia.org/wiki/Oakley,_Inc.')
-    bot = ConversaBot(url)
+    try:
+        bot = ConversaBot(url)
+    except RuntimeError as exc:
+        print(f"[AVISO] Falha ao inicializar ConversaBot: {exc}")
+        bot = FallbackConversaBot()
+    except Exception as exc:
+        print(f"[AVISO] Erro inesperado ao preparar ConversaBot: {exc}")
+        bot = FallbackConversaBot()
 
     root = WhatsAppBot(bot)
     time.sleep(2)
@@ -605,7 +749,8 @@ def main():
     sinonimos_adicionais = {
         'ola': {'oi'},
         'horario': {'hora'},
-        'olhar': {'comprar'}
+        # manter 'olhar' para expressões de navegação, sem conflitar com intenção de compra
+        'olhar': {'ver', 'visualizar'}
     }
     lista_sinonimos = adicionar_sinonimos(lista_sinonimos, sinonimos_adicionais)
 
@@ -622,7 +767,7 @@ def main():
     }
 
     # Lista de nomes das conversas que você deseja buscar no WhatsApp
-    nomes_das_conversas = ['Iza']
+    nomes_das_conversas = ['Iza' ,'Deia']
 
     while(True):
         root.checar_timeout_conversa_corrente()
@@ -638,16 +783,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
 
 
 

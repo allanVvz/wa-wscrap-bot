@@ -14,6 +14,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from nltk.corpus import stopwords
 
+from product_search.indexer import ProductSearchResult, search_products_hybrid
+from utils.text_normalizer import normalize_basic
+
 # Desativar avisos desnecessários
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -67,7 +70,8 @@ def gerar_keywords(lista_sinonimos):
     keywords = {
         'saudacao': [],
         'horario_atendimento': [],
-        'olhar': []
+        'produto': [],
+        'olhar': [],
     }
 
     for sin in list(lista_sinonimos['ola']):
@@ -92,6 +96,29 @@ def gerar_keywords(lista_sinonimos):
     for sin in list(lista_sinonimos.get('olhar', [])):
         keywords['olhar'].append(f'.*\\b{sin}\\b.*')
 
+    # termos ligados a intenção de produto/compra
+    termos_produto = [
+        'comprar',
+        'comprei',
+        'compra',
+        'tem',
+        'têm',
+        'vende',
+        'vender',
+        'preço',
+        'preco',
+        'valor',
+        'link',
+        'produto',
+        'modelo',
+        'onde comprar',
+        'mostra',
+        'mostrar',
+        'quero',
+    ]
+    for termo in termos_produto:
+        keywords['produto'].append(f'.*\\b{termo}\\b.*')
+
     # Não manter uma intent separada 'ola'; tratar tudo como 'saudacao'
 
     return keywords
@@ -115,6 +142,133 @@ def compilar_keywords(keywords, debug=False):
         if debug:
             print(f"[DEBUG] Intent '{intent}' pattern: {pattern_str}")
     return keywords_dict
+
+
+_PRODUCT_QUERY_STOPWORDS = {
+    'quero',
+    'queria',
+    'gostaria',
+    'olhar',
+    'olha',
+    'ver',
+    'mostra',
+    'mostrar',
+    'tem',
+    'têm',
+    'temos',
+    'vende',
+    'vender',
+    'venda',
+    'comprar',
+    'compra',
+    'compraria',
+    'pra',
+    'para',
+    'um',
+    'uma',
+    'de',
+    'do',
+    'da',
+    'os',
+    'as',
+    'o',
+    'a',
+    'me',
+    'vc',
+    'vcs',
+    'voce',
+    'você',
+    'link',
+    'valor',
+    'preço',
+    'preco',
+}
+
+
+_INTENT_PRIORITY = (
+    'produto',
+    'saudacao',
+    'horario_atendimento',
+    'olhar',
+)
+
+_GENERIC_PRODUCT_TERMS = {
+    'ajuda',
+    'help',
+    'site',
+    'link',
+    'horario',
+    'atendimento',
+}
+
+
+def _extrair_query_produto(texto: str) -> str:
+    normalizado = normalize_basic(texto)
+    if not normalizado:
+        return ''
+    tokens = [token for token in normalizado.split() if token not in _PRODUCT_QUERY_STOPWORDS]
+    if not tokens:
+        tokens = normalizado.split()
+    return ' '.join(tokens).strip()
+
+
+def _formatar_resposta_produto(
+    resultado: ProductSearchResult,
+    query: str,
+    respostas,
+    debug: bool = False,
+) -> str:
+    if resultado.error:
+        if debug:
+            print(f"[DEBUG] Busca produto falhou: {resultado.error}")
+        return 'Não consegui consultar o catálogo agora, tente novamente em instantes.'
+
+    if not resultado.matches:
+        return respostas.get('olhar') or 'Não encontrei esse produto ainda, dá uma olhada no nosso site.'
+
+    top = resultado.matches[0]
+    if resultado.confidence == 'high' and top.purchase_url:
+        return f"Encontrei {top.label}. Você pode comprar aqui: {top.purchase_url}"
+
+    if resultado.confidence == 'medium':
+        sugestoes = []
+        for match in resultado.matches[:3]:
+            if match.purchase_url:
+                sugestoes.append(f"- {match.label}: {match.purchase_url}")
+            else:
+                sugestoes.append(f"- {match.label}")
+        sugestoes_texto = '\n'.join(sugestoes)
+        retorno = (
+            "Encontrei algumas opções parecidas:\n"
+            f"{sugestoes_texto}\n"
+            "Me avise qual dessas combina melhor com o que você procura."
+        )
+        return retorno
+
+    fallback = respostas.get('olhar') or 'Posso te encaminhar nosso site: www.vzforeal.com'
+    if debug and top.purchase_url:
+        print(
+            f"[DEBUG] Confiança baixa para '{query}'. Top score={top.tfidf_score:.3f} "
+            f"lexical={top.lexical_score}"
+        )
+    return fallback
+
+
+def _responder_intencao_produto(entradas, respostas, debug=False):
+    for entrada in entradas:
+        query = _extrair_query_produto(entrada)
+        if not query:
+            continue
+        tokens = query.split()
+        if (len(tokens) == 1 and (tokens[0] in _GENERIC_PRODUCT_TERMS or len(tokens[0]) < 4)):
+            if debug:
+                print(f"[DEBUG] Query produto descartada (genérica): '{query}'")
+            continue
+        resultado = search_products_hybrid(query, top_k=3, debug=debug)
+        resposta = _formatar_resposta_produto(resultado, query, respostas, debug=debug)
+        if resposta:
+            return resposta
+    return respostas.get('olhar') or 'Não encontrei nada agora, veja nosso site.'
 
 
 # Classe ConversaBot para gerar respostas dinâmicas
@@ -217,16 +371,21 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
             print(f"[DEBUG] last_n_messages(): {mensagens}")
             print(f"[DEBUG] contador n_messages alvo: {max_mensagens}")
 
-        # Fallback: se nao houver contador de nao lidas, leia ultimas do cliente
         if not max_mensagens or max_mensagens <= 0:
-            textos_cli = root.get_ultimas_mensagens_cliente(3)
-            if not textos_cli:
-                return
-            mensagens_a_processar = [
-                {'texto': t, 'hora': None} for t in textos_cli if t
-            ]
-            if debug:
-                print(f"[DEBUG] Fallback ultimas mensagens cliente: {textos_cli}")
+            mensagens_recent = root.get_mensagens_apos_resposta()
+            if mensagens_recent:
+                mensagens_a_processar = mensagens_recent
+                if debug:
+                    print(f"[DEBUG] Fallback ancorado em message-out: {mensagens_recent}")
+            else:
+                textos_cli = root.get_ultimas_mensagens_cliente(1)
+                if not textos_cli:
+                    return
+                mensagens_a_processar = [
+                    {'texto': t, 'hora': None} for t in textos_cli if t
+                ]
+                if debug:
+                    print(f"[DEBUG] Fallback ultimas mensagens cliente (sem anchor): {textos_cli}")
         else:
             mensagens_a_processar = mensagens[:max_mensagens]
         if debug:
@@ -273,14 +432,30 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
         sentidos = {}
         for entrada in novas_entradas:
             matched_intent = None
-            for intent, pattern in keywords_dict.items():
-                if pattern.search(entrada):
-                    print(f"[DEBUG] Intenção encontrada: {intent} para '{entrada}'")
+            for intent in _INTENT_PRIORITY:
+                pattern = keywords_dict.get(intent)
+                if pattern and pattern.search(entrada):
+                    if debug:
+                        print(f"[DEBUG] Intenção encontrada: {intent} para '{entrada}'")
                     matched_intent = intent
                     break
-            categoria = matched_intent if (matched_intent and matched_intent in respostas) else 'wiki'
             if not matched_intent:
-                print(f"[DEBUG] Intent fallback 'wiki' para '{entrada}'")
+                for intent, pattern in keywords_dict.items():
+                    if intent in _INTENT_PRIORITY:
+                        continue
+                    if pattern.search(entrada):
+                        if debug:
+                            print(f"[DEBUG] Intenção encontrada (fallback ordem): {intent} para '{entrada}'")
+                        matched_intent = intent
+                        break
+            if matched_intent == 'produto':
+                categoria = 'produto'
+            elif matched_intent and matched_intent in respostas:
+                categoria = matched_intent
+            else:
+                categoria = 'wiki'
+                if not matched_intent and debug:
+                    print(f"[DEBUG] Intent fallback 'wiki' para '{entrada}'")
             if debug:
                 print(f"[DEBUG] Intent categorizada: {categoria} para '{entrada}'")
             sentidos.setdefault(categoria, []).append(entrada)
@@ -299,6 +474,8 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
                 print(f"[DEBUG] Respondendo categoria '{categoria}' com entradas: {entradas}")
             if categoria == 'saudacao':
                 resposta = random.choice(bot.saudacoes_respostas)
+            elif categoria == 'produto':
+                resposta = _responder_intencao_produto(entradas, respostas, debug=debug)
             elif categoria in ('horario_atendimento', 'olhar'):
                 resposta = respostas.get(categoria) or ''
             else:
@@ -313,12 +490,3 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
         if debug:
             print("[DEBUG] Ciclo do chatbot concluído; bot permanece ativo.")
         return
-
-
-
-
-
-
-
-
-
