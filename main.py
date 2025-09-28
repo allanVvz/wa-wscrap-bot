@@ -73,6 +73,159 @@ class WhatsAppBot:
         except ValueError:
             return 0
 
+    def ensure_chat_state(self, chat_id):
+        state = self.chat_state.setdefault(chat_id or "", {
+            "badge_at_click": 0,
+            "badge_pending": 0,
+            "last_out_key": None,
+            "last_out_ts": None,
+            "processed_in_keys": set(),
+            "last_cycle_at": 0.0,
+        })
+        if not isinstance(state.get("processed_in_keys"), set):
+            state["processed_in_keys"] = set(state.get("processed_in_keys", []))
+        return state
+
+    def get_current_chat_identifier(self):
+        return self._current_chat_id or ""
+
+    @staticmethod
+    def _parse_pre_plain_timestamp(pre_plain_text):
+        if not pre_plain_text:
+            return datetime.now()
+        try:
+            raw = pre_plain_text.split("]")[0][1:]
+            return datetime.strptime(raw, "%H:%M, %d/%m/%Y")
+        except Exception:
+            return datetime.now()
+
+    def _get_timeline_entries(self, limit=120):
+        seletor = "div.message-in, div.message-out"
+        try:
+            elementos = self.driver.find_elements(By.CSS_SELECTOR, seletor)
+        except Exception:
+            return []
+        total = len(elementos)
+        if not total:
+            return []
+        elementos = elementos[-max(1, limit):]
+        offset = total - len(elementos)
+        entries = []
+        for idx, elem in enumerate(elementos):
+            try:
+                classes = elem.get_attribute('class') or ''
+            except Exception:
+                continue
+            tipo = 'in' if 'message-in' in classes else 'out' if 'message-out' in classes else None
+            if not tipo:
+                continue
+            try:
+                base = elem.find_element(By.CSS_SELECTOR, "div.copyable-text[data-pre-plain-text]")
+            except NoSuchElementException:
+                continue
+            pre_plain = base.get_attribute('data-pre-plain-text') or ''
+            try:
+                texto = base.find_element(By.CSS_SELECTOR, "span[dir='ltr']").text
+            except NoSuchElementException:
+                texto = (base.text or '').strip()
+            timestamp = self._parse_pre_plain_timestamp(pre_plain)
+            global_idx = offset + idx
+            key = f"{tipo}|{pre_plain}|{global_idx}"
+            entries.append({'tipo': tipo, 'texto': (texto or '').strip(), 'hora': timestamp, 'key': key, 'pre_plain': pre_plain, 'index': global_idx})
+        return entries
+
+    def refresh_last_out_state(self, chat_id, state=None):
+        state = self.ensure_chat_state(chat_id) if state is None else state
+        entries = self._get_timeline_entries(limit=60)
+        for entry in reversed(entries):
+            if entry['tipo'] == 'out':
+                state['last_out_key'] = entry['key']
+                state['last_out_ts'] = entry['hora']
+                return
+
+    def collect_messages_for_processing(self, chat_id, fallback_limit=5):
+        state = self.ensure_chat_state(chat_id)
+        entries = self._get_timeline_entries()
+        latest_out = None
+        for entry in reversed(entries):
+            if entry['tipo'] == 'out':
+                latest_out = entry
+                break
+        if latest_out:
+            state['last_out_key'] = latest_out['key']
+            state['last_out_ts'] = latest_out['hora']
+        anchor_index = -1
+        anchor_key = None
+        anchor_ts = None
+        if state.get('last_out_key'):
+            for entry in entries:
+                if entry['tipo'] == 'out' and entry['key'] == state['last_out_key']:
+                    anchor_index = entry['index']
+                    anchor_key = entry['key']
+                    anchor_ts = entry['hora']
+                    break
+        if anchor_index == -1 and latest_out is not None:
+            anchor_index = latest_out['index']
+            anchor_key = latest_out['key']
+            anchor_ts = latest_out['hora']
+        delta = []
+        for entry in entries:
+            if anchor_index > -1 and entry['index'] <= anchor_index:
+                continue
+            if entry['tipo'] != 'in' or not entry['texto']:
+                continue
+            if entry['key'] in state['processed_in_keys']:
+                continue
+            delta.append({'texto': entry['texto'], 'hora': entry['hora'], 'key': entry['key']})
+        badge_limit = state.get('badge_pending')
+        if badge_limit is None or badge_limit == 0:
+            badge_limit = state.get('badge_at_click', 0)
+        if badge_limit and badge_limit > 0:
+            if len(delta) > badge_limit:
+                delta = delta[-badge_limit:]
+        else:
+            limit = max(1, fallback_limit)
+            if len(delta) > limit:
+                delta = delta[-limit:]
+        if not delta:
+            if anchor_index == -1:
+                recent_in = [entry for entry in entries if entry['tipo'] == 'in' and entry['texto']]
+                if recent_in:
+                    entry = recent_in[-1]
+                    if entry['key'] not in state['processed_in_keys']:
+                        delta = [{'texto': entry['texto'], 'hora': entry['hora'], 'key': entry['key']}]
+        delta.sort(key=lambda item: (item['hora'], item['key']))
+        self.conversa_bot.n_messages = len(delta)
+        return {
+            'messages': delta,
+            'latest_out_key': state.get('last_out_key'),
+            'latest_out_ts': state.get('last_out_ts'),
+            'anchor_key': anchor_key,
+            'anchor_ts': anchor_ts,
+            'badge_limit': badge_limit or 0,
+        }
+
+    def finalize_chat_processing(self, chat_id, processed_keys, responded, anchor_info=None):
+        state = self.ensure_chat_state(chat_id)
+        if processed_keys:
+            state['processed_in_keys'].update(processed_keys)
+            pending = state.get('badge_pending')
+            if pending is None or pending == 0:
+                pending = state.get('badge_at_click', 0)
+            pending = max(0, pending - len(processed_keys))
+            state['badge_pending'] = pending
+            state['badge_at_click'] = pending if pending > 0 else 0
+        if anchor_info:
+            if anchor_info.get('latest_out_key'):
+                state['last_out_key'] = anchor_info['latest_out_key']
+                state['last_out_ts'] = anchor_info.get('latest_out_ts')
+        if not processed_keys and not responded and state.get('badge_pending', 0) > 0:
+            state['badge_pending'] = 0
+            state['badge_at_click'] = 0
+        if responded:
+            self.refresh_last_out_state(chat_id, state)
+        state['last_cycle_at'] = time.time()
+
     def __init__(self, conversa_bot):
         # Configuraçoes do Chrome
         def build_options(user_data_dir=None):
@@ -149,6 +302,8 @@ class WhatsAppBot:
         self.conversa_corrente_nome = None
         self.conversa_corrente_last_seen = 0.0
         self.conversa_corrente_total_incoming = 0
+        self.chat_state = {}
+        self._current_chat_id = None
         try:
             timeout_cfg = float(os.environ.get('CHAT_TIMEOUT_SECONDS', self.DEFAULT_INACTIVITY_TIMEOUT))
         except (TypeError, ValueError):
@@ -232,7 +387,6 @@ class WhatsAppBot:
         :param nomes_conversas: Lista de nomes das conversas que deseja selecionar
         """
         self.conversa_bot.n_messages = 0
-
         nao_lidas_cache = self.listar_contatos_nao_lidos()
         nao_lidas_map = {
             self._sanitize_nome(item.get('nome')): int(item.get('nao_lidas', 0))
@@ -241,35 +395,45 @@ class WhatsAppBot:
 
         for nome in nomes_conversas:
             nome_sanit = self._sanitize_nome(nome)
+            state = self.ensure_chat_state(nome_sanit)
             if self.atualizar_conversa_corrente(nome):
                 print(f"[DEBUG] Conversa '{nome}' esta ativa; fluxo alternativo sem badge.")
-                self.conversa_bot.n_messages = 0
+                self.conversa_bot.n_messages = state.get('badge_pending', 0)
+                self._current_chat_id = nome_sanit or None
                 return
             try:
                 conversa_element = self._localizar_conversa_por_nome(nome)
 
-                n_mensagens = 0
+                badge_internal = 0
                 badges = conversa_element.find_elements(
                     By.CSS_SELECTOR,
                     "span[aria-label$='mensagem não lida'], span[aria-label$='mensagens não lidas']"
                 )
                 for badge in badges:
                     qtd = self._parse_unread_badge(badge)
-                    if qtd > n_mensagens:
-                        n_mensagens = qtd
+                    if qtd > badge_internal:
+                        badge_internal = qtd
 
-                if n_mensagens <= 0 and nome_sanit:
-                    fallback_qtd = nao_lidas_map.get(nome_sanit, 0)
-                    if fallback_qtd > 0 and os.environ.get('BOT_DEBUG') == '1':
-                        print(
-                            f"[DEBUG] Utilizando contagem cacheada de não lidas para '{nome}': {fallback_qtd}"
-                        )
-                    n_mensagens = fallback_qtd
+                pane_badge = nao_lidas_map.get(nome_sanit, 0)
+                badge_at_click = max(badge_internal, pane_badge)
 
-                self.conversa_bot.n_messages = max(0, n_mensagens)
-                print(
-                    f"[DEBUG] Contador de nao lidas para '{nome}': {self.conversa_bot.n_messages}"
-                )
+                if badge_at_click > 0:
+                    if badge_at_click != state.get('badge_at_click'):
+                        state['badge_at_click'] = badge_at_click
+                        state['badge_pending'] = badge_at_click
+                        if os.environ.get('BOT_DEBUG') == '1':
+                            print(f"[DEBUG] badge_at_click congelado para '{nome}': {badge_at_click}")
+                elif state.get('badge_pending', 0) > 0:
+                    badge_at_click = state['badge_pending']
+                else:
+                    badge_at_click = 0
+
+                state['last_seen_pane_badge'] = pane_badge
+                self.conversa_bot.n_messages = max(0, badge_at_click)
+                if os.environ.get('BOT_DEBUG') == '1':
+                    print(
+                        f"[DEBUG] Contador de nao lidas para '{nome}': {self.conversa_bot.n_messages} (pane={pane_badge}, badge={badge_internal})"
+                    )
                 if self.conversa_bot.n_messages > 0:
                     print(f"Conversa encontrada com o nome: {nome}")
 
@@ -277,14 +441,22 @@ class WhatsAppBot:
                 WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.ID, 'main'))
                 )
+                try:
+                    ultimo = self.driver.find_elements(By.CSS_SELECTOR, "div.message-in, div.message-out")[-1]
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'end'});", ultimo)
+                except Exception:
+                    pass
                 self.conversa_corrente_ativa = True
                 self.conversa_corrente_nome = nome
                 self.conversa_corrente_last_seen = time.time()
                 self.conversa_corrente_total_incoming = self._contar_mensagens_entrada()
+                self._current_chat_id = nome_sanit or None
+                state['last_cycle_start'] = time.time()
+                if state.get('badge_pending', 0) == 0 and badge_at_click > 0:
+                    state['badge_pending'] = badge_at_click
                 if self.conversa_bot.n_messages <= 0:
-                    # pequena espera para garantir que a lista atualize antes dos próximos passos
                     time.sleep(0.6)
-                return  # Sai do método após clicar na conversa correta
+                return
 
             except NoSuchElementException:
                 print(f"Conversa com o nome {nome} não encontrada.")
@@ -348,6 +520,7 @@ class WhatsAppBot:
         self.conversa_corrente_total_incoming = 0
         self.conversa_corrente_last_seen = 0.0
         self.conversa_bot.n_messages = 0
+        self._current_chat_id = None
 
     def last_n_messages(self):
         try:
@@ -767,7 +940,7 @@ def main():
     }
 
     # Lista de nomes das conversas que você deseja buscar no WhatsApp
-    nomes_das_conversas = ['Iza' ,'Deia']
+    nomes_das_conversas = ['mana']
 
     while(True):
         root.checar_timeout_conversa_corrente()

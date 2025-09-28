@@ -68,3 +68,39 @@ Como alterar o alvo:
 
 ## Aviso
 Use este projeto de forma responsável, respeitando os termos de uso do WhatsApp e a legislação local. Automatizações podem violar políticas da plataforma; utilize apenas para fins de estudo/demonstração.
+
+## Artefatos do Projeto
+
+### 1. Cenário
+- **Objetivo do agente:** acompanhar conversas no WhatsApp Web, identificar intenções do cliente (saudação, horário, consulta de produtos) e responder de forma rápida e padronizada, incluindo links diretos de compra quando possível.
+- **Contexto organizacional:** operação de atendimento digital que já utiliza WhatsApp como canal principal e precisa manter respostas consistentes enquanto integra informações de catálogo próprio (via API Yampi).
+- **Motivação:** reduzir o tempo de resposta, evitar esquecimentos em múltiplas conversas simultâneas e oferecer recomendações de produtos mesmo quando o operador humano não está disponível.
+
+### 2. Fluxo conversacional
+- Entrada é lida do painel de não lidas do WhatsApp, respeitando um badge congelado por conversa.
+- Mensagens são processadas por delta pós-âncora (apenas o que chegou após a última resposta do servidor).
+- Intents avaliadas em ordem de prioridade (`produto` → `saudacao` → `horario_atendimento` → `olhar` → fallback wiki).
+- Respostas enviadas e estado da conversa atualizado (âncora, badge remanescente, histórico deduplicado).
+
+### 3. Tecnologias adotadas
+- **Abordagem:** automação com Selenium controlando o WhatsApp Web e um motor próprio de intents + regras.
+- **PLN/ML:** regex para intents principais; TF-IDF + cosine para fallback wiki; busca híbrida (TF-IDF char n-grams + similaridade lexical opcional) para produtos.
+- **Bibliotecas:** Selenium, webdriver-manager, nltk, scikit-learn, numpy, requests, beautifulsoup4, rapidfuzz (opcional), unidecode (opcional).
+- **Plataforma conversacional:** WhatsApp Web automatizado via ChromeDriver.
+- **Justificativa:** a pilha mantém execução local controlável, evita dependência de serviços externos de conversação e possibilita customização fina do fluxo (contagem de badges, âncoras, entidades de produto).
+
+### 4. Agente conversacional funcional
+- O fluxo implementado corresponde ao roteiro descrito acima (painel → delta pós-âncora → intent → resposta).
+- Recurso externo: consulta ao catálogo Yampi (`product_lookup.py`) com fallback configurável.
+- Entidades manipuladas: produto, SKU, URL de compra, timestamps da conversa, badge de não lidas.
+- Boas práticas aplicadas: deduplicação estável, logs condicionados por `BOT_DEBUG`, separação de responsabilidades por módulo.
+- Dimensionamento: suporta múltiplas conversas monitoradas a partir da lista lateral e ciclos contínuos de verificação.
+
+### 5. Plano de avaliação
+- **Metodologia:** testes end-to-end simulando conversas reais (saudação, horário, compra), inspeção de logs com `BOT_DEBUG`, revisão manual do histórico no WhatsApp Web.
+- **Características avaliadas:** precisão de intent, aderência ao badge congelado, latência entre leitura e resposta, exatidão das URLs retornadas.
+- **Processo sugerido:** roteiros de conversa repetíveis (com e sem catálogo), checklist de regressão a cada alteração, auditoria periódica do log de decisões.
+
+## Plano de Entrega
+- **Semana 7:** consolidar documentação (cenário, fluxo conversacional, tecnologias) em material textual ou apresentação interna para alinhamento.
+- **Semana 8:** disponibilizar o agente funcional com as integrações de catálogo, ajustes finos de intents e proposta de avaliação; apresentar resultados de forma resumida à equipe interessada. O código atualizado deve ser entregue em pacote acessível.

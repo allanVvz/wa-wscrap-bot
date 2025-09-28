@@ -351,7 +351,7 @@ class ConversaBot:
 # Função principal do chatbot
 
 def chatbot(keywords_dict, respostas, bot, root, debug=False):
-    mensagens_armazenadas = []  # legado local (não usado para dedupe entre ciclos)
+    mensagens_armazenadas = []
 
     while root.bot_ativo:
         if not debug:
@@ -359,59 +359,54 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
                 debug = bool(int(os.environ.get('BOT_DEBUG', '0')))
             except Exception:
                 debug = False
-        mensagens = root.last_n_messages()
-        max_mensagens = root.conversa_bot.n_messages
+        try:
+            chat_id = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
+        except Exception:
+            chat_id = ''
+
+        collection = root.collect_messages_for_processing(chat_id)
+        collection = collection or {'messages': []}
+        mensagens_coletadas = collection.get('messages', [])
         if debug:
             print(f"[DEBUG] Início ciclo. bot_ativo={root.bot_ativo}")
-            try:
-                ident_dbg = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
-            except Exception:
-                ident_dbg = 'desconhecido'
-            print(f"[DEBUG] Chat atual: {ident_dbg}")
-            print(f"[DEBUG] last_n_messages(): {mensagens}")
-            print(f"[DEBUG] contador n_messages alvo: {max_mensagens}")
+            print(f"[DEBUG] Chat atual: {chat_id or 'desconhecido'}")
+            print(f"[DEBUG] mensagens_coletadas: {mensagens_coletadas}")
 
-        if not max_mensagens or max_mensagens <= 0:
-            mensagens_recent = root.get_mensagens_apos_resposta()
-            if mensagens_recent:
-                mensagens_a_processar = mensagens_recent
-                if debug:
-                    print(f"[DEBUG] Fallback ancorado em message-out: {mensagens_recent}")
-            else:
-                textos_cli = root.get_ultimas_mensagens_cliente(1)
-                if not textos_cli:
-                    return
-                mensagens_a_processar = [
-                    {'texto': t, 'hora': None} for t in textos_cli if t
-                ]
-                if debug:
-                    print(f"[DEBUG] Fallback ultimas mensagens cliente (sem anchor): {textos_cli}")
-        else:
-            mensagens_a_processar = mensagens[:max_mensagens]
+        if not mensagens_coletadas:
+            if chat_id:
+                root.finalize_chat_processing(chat_id, [], responded=False, anchor_info=collection)
+            return
+
+        mensagens_a_processar = [
+            {'texto': msg.get('texto', ''), 'hora': msg.get('hora'), 'key': msg.get('key')}
+            for msg in mensagens_coletadas
+        ]
+
         if debug:
             print(f"[DEBUG] mensagens_a_processar: {mensagens_a_processar}")
-        novas_entradas = []
 
-        # Mapa persistente de mensagens já processadas por conversa
         try:
-            ident_global = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
+            ident_global = chat_id or getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
         except Exception:
-            ident_global = 'desconhecido'
+            ident_global = chat_id or 'desconhecido'
         if not hasattr(root, 'processed_msgs_map'):
             root.processed_msgs_map = {}
         processed_set = root.processed_msgs_map.setdefault(ident_global, set())
 
+        novas_entradas = []
+        processed_keys = []
+
         for mensagem in mensagens_a_processar:
-            # chave de dedupe: texto normalizado (não usar hora, que varia a cada fallback)
-            entrada = str(mensagem.get('texto', '')).strip().lower()
-            hora_val = mensagem.get('hora')
-            if isinstance(hora_val, datetime):
-                hora_key = hora_val.strftime("%Y-%m-%dT%H:%M")
-            else:
-                hora_key = str(hora_val) if hora_val is not None else ''
-            chave = (entrada, hora_key)
+            entrada = str(mensagem.get('texto', '')).strip()
             if not entrada:
                 continue
+            hora_val = mensagem.get('hora')
+            if isinstance(hora_val, datetime):
+                hora_key = hora_val.strftime("%Y-%m-%dT%H:%M:%S")
+            else:
+                hora_key = str(hora_val) if hora_val is not None else ''
+            msg_key = mensagem.get('key') or f"fallback|{entrada.casefold()}|{hora_key}"
+            chave = ('key', msg_key)
             if chave in processed_set:
                 if debug:
                     print(f"[DEBUG] Ignorando repetida (já processada): '{entrada}'")
@@ -422,30 +417,34 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
             except Exception:
                 pass
             processed_set.add(chave)
-            novas_entradas.append(entrada)
+            processed_keys.append(msg_key)
+            novas_entradas.append({'texto': entrada, 'hora_key': hora_key, 'key': msg_key})
+
         if debug:
-            print(f"[DEBUG] novas_entradas: {novas_entradas}")
+            print(f"[DEBUG] novas_entradas: {[item['texto'] for item in novas_entradas]}")
 
         if not novas_entradas:
+            root.finalize_chat_processing(chat_id, [], responded=False, anchor_info=collection)
             return
 
         sentidos = {}
-        for entrada in novas_entradas:
+        for entrada_info in novas_entradas:
+            texto = entrada_info['texto']
             matched_intent = None
             for intent in _INTENT_PRIORITY:
                 pattern = keywords_dict.get(intent)
-                if pattern and pattern.search(entrada):
+                if pattern and pattern.search(texto):
                     if debug:
-                        print(f"[DEBUG] Intenção encontrada: {intent} para '{entrada}'")
+                        print(f"[DEBUG] Intenção encontrada: {intent} para '{texto}'")
                     matched_intent = intent
                     break
             if not matched_intent:
                 for intent, pattern in keywords_dict.items():
                     if intent in _INTENT_PRIORITY:
                         continue
-                    if pattern.search(entrada):
+                    if pattern.search(texto):
                         if debug:
-                            print(f"[DEBUG] Intenção encontrada (fallback ordem): {intent} para '{entrada}'")
+                            print(f"[DEBUG] Intenção encontrada (fallback ordem): {intent} para '{texto}'")
                         matched_intent = intent
                         break
             if matched_intent == 'produto':
@@ -455,38 +454,35 @@ def chatbot(keywords_dict, respostas, bot, root, debug=False):
             else:
                 categoria = 'wiki'
                 if not matched_intent and debug:
-                    print(f"[DEBUG] Intent fallback 'wiki' para '{entrada}'")
+                    print(f"[DEBUG] Intent fallback 'wiki' para '{texto}'")
             if debug:
-                print(f"[DEBUG] Intent categorizada: {categoria} para '{entrada}'")
-            sentidos.setdefault(categoria, []).append(entrada)
+                print(f"[DEBUG] Intent categorizada: {categoria} para '{texto}'")
+            sentidos.setdefault(categoria, []).append(entrada_info)
+
         if debug:
-            print(f"[DEBUG] sentidos agrupados: {sentidos}")
+            resumo_sentidos = {cat: [info['texto'] for info in entradas] for cat, entradas in sentidos.items()}
+            print(f"[DEBUG] sentidos agrupados: {resumo_sentidos}")
 
-        try:
-            ident = getattr(root, 'expected_chat', None) or root.get_current_chat_identifier()
-            root.senses_map[ident] = sentidos
-            root.senses_count[ident] = len(sentidos)
-        except Exception:
-            pass
-
+        respondeu_algo = False
         for categoria, entradas in sentidos.items():
+            textos_categoria = [info['texto'] for info in entradas]
             if debug:
-                print(f"[DEBUG] Respondendo categoria '{categoria}' com entradas: {entradas}")
+                print(f"[DEBUG] Respondendo categoria '{categoria}' com entradas: {textos_categoria}")
             if categoria == 'saudacao':
                 resposta = random.choice(bot.saudacoes_respostas)
             elif categoria == 'produto':
-                resposta = _responder_intencao_produto(entradas, respostas, debug=debug)
+                resposta = _responder_intencao_produto(textos_categoria, respostas, debug=debug)
             elif categoria in ('horario_atendimento', 'olhar'):
                 resposta = respostas.get(categoria) or ''
             else:
-                combinado = ' '.join(entradas)
+                combinado = ' '.join(textos_categoria)
                 resposta = bot.gerador_respostas(combinado)
             if resposta:
                 if debug:
                     print(f"[DEBUG] Enviando resposta: {resposta}")
                 root.enviar_mensagem(resposta)
+                respondeu_algo = True
 
-        # Conclui o ciclo mantendo o bot ativo para próximas interações
-        if debug:
-            print("[DEBUG] Ciclo do chatbot concluído; bot permanece ativo.")
+        processed_keys_unique = list({key for key in processed_keys if key})
+        root.finalize_chat_processing(chat_id, processed_keys_unique, responded=respondeu_algo, anchor_info=collection)
         return
