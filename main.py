@@ -45,7 +45,7 @@ class WhatsAppBot:
     ACTIVE_CHAT_SELECTOR = "#pane-side > div:nth-child(1) > div > div > div:nth-child(2) > div > div > div > div._ak8l._ap1_ > div._ak8o > div._ak8q > div > div > span"
     ALL_FILTER_SELECTOR = "#all-filter"
     UNREAD_FILTER_SELECTOR = "#unread-filter > div > div"
-    DEFAULT_INACTIVITY_TIMEOUT = 20.0
+    DEFAULT_INACTIVITY_TIMEOUT = 90.0
 
     @staticmethod
     def _sanitize_nome(valor):
@@ -499,22 +499,11 @@ class WhatsAppBot:
         ultimo = self.conversa_corrente_last_seen or 0.0
         if (time.time() - ultimo) >= limite:
             nome = self.conversa_corrente_nome or "desconhecida"
-            print(f"[DEBUG] Timeout de inatividade atingido para '{nome}'. Alternando para conversa 'main'.")
+            print(f"[DEBUG] Timeout de inatividade para '{nome}'. Resetando estado.")
             self.ir_para_conversa_main()
 
     def ir_para_conversa_main(self):
-        """Alterna temporariamente para o filtro "tudo" e seleciona a conversa "main"."""
-        if self.clicar_filtro_generico(self.ALL_FILTER_SELECTOR, "tudo"):
-            try:
-                main_chat = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, "span[title='main']"))
-                )
-                main_chat.click()
-                print("[DEBUG] Conversa 'main' clicada.")
-            except Exception as e:
-                print(f"[AVISO] Falha ao clicar na conversa 'main': {type(e).__name__}: {e}")
-        time.sleep(1)
-        self.clicar_filtro_nao_lidas()
+        """Reseta o estado da conversa corrente após timeout de inatividade."""
         self.conversa_corrente_ativa = False
         self.conversa_corrente_nome = None
         self.conversa_corrente_total_incoming = 0
@@ -642,6 +631,19 @@ class WhatsAppBot:
         except Exception as e:
             print(f"Erro ao tentar voltar para a tela principal: {e}")
 
+
+    def log_conversa(self, tipo, chat_id, texto):
+        try:
+            log_dir = os.path.abspath(os.path.join('.', 'logs'))
+            os.makedirs(log_dir, exist_ok=True)
+            safe_id = re.sub(r'[^\w\-]', '_', str(chat_id or 'desconhecido'))
+            log_path = os.path.join(log_dir, f"conversa_{safe_id}.log")
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] [{tipo.upper()}] {texto}\n")
+        except Exception as e:
+            if os.environ.get('BOT_DEBUG') == '1':
+                print(f"[AVISO] Falha ao registrar log: {e}")
 
     def enviar_mensagem(self, mensagem):
         try:
@@ -900,18 +902,6 @@ def main():
     root = WhatsAppBot(bot)
     time.sleep(2)
 
-    # Clicar no filtro superior "mensagens não lidas" e encerrar
-    root.clicar_filtro_nao_lidas()
-    time.sleep(1)
-
-    # Listar contatos com não lidas e exibir debug
-    contatos = root.listar_contatos_nao_lidos()
-    if not contatos:
-        print('Nenhum contato com mensagens não lidas encontrado.')
-    else:
-        print('Contatos com não lidas:')
-        for idx, c in enumerate(contatos, start=1):
-            print(f"[{idx}] nome/numero='{c['nome']}' | nao_lidas={c['nao_lidas']}")
     time.sleep(1)
 
     # Lista de palavras
@@ -936,11 +926,15 @@ def main():
         'saudacao': None,
         'horario_atendimento': 'Nosso horario de funcionamento e de 16:00 as 23:00.',
         'olhar': 'Claro, voce pode ver nosso site: www.vzforeal.com',
+        'agradecimento': 'De nada! Se precisar de mais alguma coisa, e so chamar.',
+        'despedida': 'Ate mais! Foi um prazer te atender.',
+        'confirmacao': 'Certo! Em que mais posso te ajudar?',
+        'negacao': 'Entendido! Se precisar de algo, e so chamar.',
         'padrao': 'Nao entendi bem. Vou tentar responder com base no que sei:'
     }
 
     # Lista de nomes das conversas que você deseja buscar no WhatsApp
-    nomes_das_conversas = ['mana']
+    nomes_das_conversas = ['Sofia']
 
     while(True):
         root.checar_timeout_conversa_corrente()

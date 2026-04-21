@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional
 
-from product_lookup import Product, Sku, fetch_products
+from product_lookup import Product, Sku, fetch_products, is_featured_product
 from utils.text_normalizer import normalize_basic
 from utils.similarity import (
     HybridRanker,
@@ -46,6 +46,7 @@ class ProductMatch:
     tfidf_score: float
     lexical_score: Optional[float]
     forced: bool
+    price: float = 0.0
 
 
 @dataclass
@@ -53,6 +54,14 @@ class ProductSearchResult:
     matches: List[ProductMatch]
     confidence: str
     error: Optional[str] = None
+
+
+@dataclass
+class PortfolioItem:
+    label: str
+    price: float
+    url: Optional[str]
+    is_promo: bool
 
 
 _INDEX_CACHE: Optional[ProductIndex] = None
@@ -83,7 +92,7 @@ def _ensure_purchase_url(product: Product, sku: Optional[Sku]) -> Optional[str]:
 
 
 def _compose_label(product: Product, sku: Optional[Sku]) -> str:
-    if sku and sku.title:
+    if sku and sku.title and sku.title.strip().lower() != "default title":
         return sku.title
     if product.name:
         return product.name
@@ -199,6 +208,7 @@ def _rank_to_match(
         tfidf_score=ranked.tfidf_score,
         lexical_score=ranked.lexical_score,
         forced=ranked.forced,
+        price=doc.sku.price_sale if doc.sku else 0.0,
     )
 
 
@@ -246,3 +256,67 @@ def search_products_hybrid(
         )
 
     return ProductSearchResult(matches=matches, confidence=confidence, error=None)
+
+
+def get_portfolio(max_items: int = 6, debug: bool = False) -> List[PortfolioItem]:
+    """Returns a simplified product portfolio built from the index cache."""
+    try:
+        index = get_or_build_product_index(debug=debug)
+    except ProductIndexUnavailable as exc:
+        if debug:
+            print(f"[DEBUG] Portfolio indisponivel: {exc}")
+        return []
+
+    seen: set = set()
+    items: List[PortfolioItem] = []
+    for doc in index.metadata:
+        label = doc.label
+        if label in seen:
+            continue
+        seen.add(label)
+        sku = doc.sku
+        price = sku.price_sale if sku else 0.0
+        is_promo = bool(sku and sku.price_discount and sku.price_discount > sku.price_sale > 0)
+        if not is_promo and doc.product:
+            is_promo = is_featured_product(doc.product)
+        items.append(PortfolioItem(
+            label=label,
+            price=price,
+            url=doc.purchase_url,
+            is_promo=is_promo,
+        ))
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def get_featured_products(debug: bool = False) -> List[PortfolioItem]:
+    """Returns only products marked as promotion/featured."""
+    try:
+        index = get_or_build_product_index(debug=debug)
+    except ProductIndexUnavailable as exc:
+        if debug:
+            print(f"[DEBUG] Destaques indisponivel: {exc}")
+        return []
+
+    seen: set = set()
+    featured: List[PortfolioItem] = []
+    for doc in index.metadata:
+        sku = doc.sku
+        is_promo = bool(sku and sku.price_discount and sku.price_discount > sku.price_sale > 0)
+        if not is_promo and doc.product:
+            is_promo = is_featured_product(doc.product)
+        if not is_promo:
+            continue
+        label = doc.label
+        if label in seen:
+            continue
+        seen.add(label)
+        price = sku.price_sale if sku else 0.0
+        featured.append(PortfolioItem(
+            label=label,
+            price=price,
+            url=doc.purchase_url,
+            is_promo=True,
+        ))
+    return featured
